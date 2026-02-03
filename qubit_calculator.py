@@ -1,4 +1,3 @@
-import sys
 import numpy as np
 import matplotlib
 
@@ -9,7 +8,6 @@ from typing import List, Optional
 from tabulate import tabulate
 
 from scipy.optimize import curve_fit
-from scipy.signal import argrelextrema
 from scipy.ndimage import gaussian_filter
 from scipy.interpolate import RectBivariateSpline
 from matplotlib import gridspec
@@ -18,399 +16,15 @@ from shapely.plotting import plot_polygon
 from itertools import product
 
 from zeroheliumkit.src.core import Structure
+from zeroheliumkit.fem.fieldreader import FieldAnalyzer
 from zeroheliumkit.src.settings import *
-from zeroheliumkit.fem.fieldreader import *
 from zeroheliumkit.helpers.constants import *
+from quantum_electron.schrodinger_solver import QuantumAnalysis
 
-
-
-sys.path.insert(1, "/Volumes/EeroQ/lib/quantum_electron/")
-sys.path.insert(1, "/Volumes/EeroQ/lib/quantum_electron") #added for importing on mac
-try:
-    from quantum_electron.schrodinger_solver import QuantumAnalysis
-except:
-    from quantum_electron.quantum_electron.schrodinger_solver import QuantumAnalysis
-
+from utils import *
 
 frequency_scale = 1e6 * np.sqrt(2 * qe/me) * 1e-9/(2 * np.pi)
 l0 = 1e-6
-
-def MorsePotential(x, De, alpha, offset, x0=0):
-    exp_arg = - alpha * (x - x0)
-    clipped_arg = np.clip(exp_arg, None, 700)   # Prevent overflow in exp
-    return De * (1 - np.exp(clipped_arg)) ** 2 + offset
-
-def HarmonicPotential(x, A, B, offset, x0=0):
-    return  A * (x - x0)**2 + B * (x - x0)**4 + offset
-
-def find_maxvalue_indicies(array, exclude_area=None):
-    """
-    Find the indices of the maximum value in a given array.
-    
-    Parameters:
-        array (numpy.ndarray): The input array.
-    
-    Returns:
-        tuple: A tuple containing the indices of the maximum value.
-    """
-    if exclude_area:
-        array = ma.masked_array(array, mask=exclude_area)
-    max_index = np.unravel_index(array.argmax(), array.shape)
-    return max_index
-
-def inside_trap(geom: Polygon, x: float, y: float) -> bool:
-    """
-    Check if a point (x, y) is inside a given polygon.
-
-    Parameters:
-    - geom (Polygon): The polygon to check against.
-    - x (float): The x-coordinate of the point.
-    - y (float): The y-coordinate of the point.
-
-    Returns:
-    - bool: True if the point is inside the polygon, False otherwise.
-    """
-    return Point(x, y).within(geom)
-
-
-def find_nearest_value_index(array: list, value: float) -> int:
-    """
-    Finds the index of the element in the given array that is closest to the specified value.
-
-    Parameters:
-    array (list): The input array.
-    value (float): The value to find the nearest index for.
-
-    Returns:
-    int: The index of the element in the array that is closest to the specified value.
-    """
-    array = np.asarray(array)
-    idx = (np.abs(array - value)).argmin()
-    return idx
-
-
-def get_cropped_data(xlist: list,
-                             crop_zone: tuple,
-                             potential: list) -> list:
-    """ crops (applies mask) the 1D potential
-
-    Args:
-        xlist (list): x-axis array
-        potential (list): array to be cropped
-        crop_zone (tuple): (x1, x2) - crop zone
-
-    Returns:
-        float: masked array with the size of original potential
-    """
-    cropped = ma.masked_where(crop_zone[0] > xlist, potential)
-    cropped= ma.masked_where(crop_zone[1] < xlist, cropped)
-    
-    return cropped
-
-
-def prepare_to_tabulate(d: dict):
-    return [[key, value] for key, value in d.items()]
-
-
-def print_nested_dict(d: dict, add_text: str = ""):
-    for key, value in d.items():
-        if isinstance(value, dict):
-            print(key + add_text)
-            print(tabulate(prepare_to_tabulate(value), tablefmt='fancy_grid', floatfmt=".2f"))
-        else:
-            print(key, value)
-
-
-class QubitAnalyzer(FieldAnalyzer):
-
-    def __init__(self, *args):
-        super().__init__(*args)
-        self.trap_area = {
-            'x': [-0.5, 0.5],
-            'y': [-0.5, 0.5]}
-    """
-    def crop_data(self, couplingConst: dict, trap_area: dict=None):
-        if not trap_area:
-            trap_area = self.trap_area
-
-        xlist = couplingConst.get('xlist')
-        ylist = couplingConst.get('ylist')
-        i1 = find_nearest(xlist, trap_area.get('x')[0])
-        i2 = find_nearest(xlist, trap_area.get('x')[1])
-        j1 = find_nearest(ylist, trap_area.get('y')[0])
-        j2 = find_nearest(ylist, trap_area.get('y')[1])
-
-        return Phi_trap[i1:i2, y_index]
-    """
-    
-    def make_trap_for_frequencyCalc(self, 
-                                    couplingConst: dict, 
-                                    voltages: dict,  
-                                    zlevel_key=None, 
-                                    trackCenter=True,
-                                    area_of_interest: Polygon=None) -> tuple:
-        '''
-        - centering the trap potential to the potential MAX position
-        - subtracting the potential MAX value
-        '''
-        X, Y, Phi = self.potential(couplingConst, voltages, zlevel_key)
-
-        if isinstance(area_of_interest, np.ndarray):
-            Phi = ma.masked_array(Phi, mask=area_of_interest)
-
-        if trackCenter:
-            ij_max = find_max_index(Phi)
-            x_center = X[ij_max[0]]
-            y_center = Y[ij_max[1]]
-        else: 
-            x_center, y_center = 0, 0
-
-        phi_max = np.max(Phi)
-        return x_center, y_center, X, Y, Phi - phi_max
-    
-    def get_trapfreq_MorseApprox(self, 
-                                X_trap: list, 
-                                Y_trap: list, 
-                                Phi_trap: list, 
-                                plot=False):
-        '''
-        calculates motional frequency from using a harmonical approximation of the trap
-        '''
-        ij_max = find_max_index(Phi_trap)
-        x_index = ij_max[0]
-        y_index = ij_max[1]
-        x_center = X_trap[ij_max[0]]
-        y_center = Y_trap[ij_max[1]]
-
-        if center_within_area(x_center, y_center, X_trap, Y_trap, tol=0.1):
-            try:
-                fitspan = 0.2
-                i1 = find_nearest(X_trap, x_center - fitspan/2)
-                i2 = find_nearest(X_trap, x_center + fitspan/2)
-                j1 = find_nearest(Y_trap, y_center - fitspan/2)
-                j2 = find_nearest(Y_trap, y_center + fitspan/2)
-                
-                try:
-                    init_guess_y = [1e-2, +1, 0, -0.01]
-                    paramsy, _ = curve_fit(MorsePotential, Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], p0=init_guess_y)
-                except:
-                    init_guess_y = [1e-2, -1, 0, +0.01]
-                    paramsy, _ = curve_fit(MorsePotential, Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], p0=init_guess_y)
-
-                try:
-                    init_guess = [1e-1, -1, 0, +0.01]
-                    paramsx, _ = curve_fit(MorsePotential, X_trap[i1:i2]-x_center, -Phi_trap[i1:i2, y_index], p0=init_guess)
-                except:
-                    init_guess = [1e-1, +1, 0, -0.01]
-                    paramsx, _ = curve_fit(MorsePotential, X_trap[i1:i2]-x_center, -Phi_trap[i1:i2, y_index], p0=init_guess)
-                
-                fx =  (abs(2 * paramsx[0] * paramsx[1]**2) * 10**(12) * qe/me)**(1/2) * 10**(-9)/(2 * 3.14)
-                fy =  (abs(2 * paramsy[0] * paramsy[1]**2) * 10**(12) * qe/me)**(1/2) * 10**(-9)/(2 * 3.14)
-                h = hbar * 2 * pi
-                amharmY = fy ** 2 / (2 * paramsy[0] * qe * 1e-9 / h)
-
-                if plot:
-                    plt.figure(figsize=(4,4))
-                    plt.plot(Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], 'o')
-                    xtemp = np.linspace(-fitspan/2, fitspan/2,51)
-                    plt.plot(xtemp, MorsePotential(xtemp, *paramsy))
-                    plt.show()
-                
-                return fx, fy, amharmY
-            
-            except:
-                return float("nan"), float("nan"), float("nan")
-        else:
-            return float("nan"), float("nan"), float("nan")
-    
-    def get_trapfreq_MorseApprox2(self, 
-                                X_trap: list, 
-                                Y_trap: list, 
-                                Phi_trap: list, 
-                                plot=False):
-        '''
-        calculates motional frequency from using a harmonical approximation of the trap
-        '''
-        ij_max = find_max_index(Phi_trap)
-        x_index = ij_max[0]
-        y_index = ij_max[1]
-        x_center = X_trap[ij_max[0]]
-        y_center = Y_trap[ij_max[1]]
-
-        if center_within_area(x_center, y_center, X_trap, Y_trap, tol=0.1):
-            try:
-                fitspan = 0.2
-                i1 = find_nearest(X_trap, x_center - fitspan/2)
-                i2 = find_nearest(X_trap, x_center + fitspan/2)
-                j1 = find_nearest(Y_trap, y_center - fitspan/2)
-                j2 = find_nearest(Y_trap, y_center + fitspan/2)
-                
-                try:
-                    init_guess_y = [1e-2, +1, np.max(Phi_trap), -0.01]
-                    paramsy, _ = curve_fit(MorsePotential, Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], p0=init_guess_y)
-                except:
-                    init_guess_y = [1e-2, -1, np.max(Phi_trap), +0.01]
-                    paramsy, _ = curve_fit(MorsePotential, Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], p0=init_guess_y)
-
-                try:
-                    init_guess = [1e-1, -1, np.max(Phi_trap), +0.01]
-                    paramsx, _ = curve_fit(MorsePotential, X_trap[i1:i2]-x_center, -Phi_trap[i1:i2, y_index], p0=init_guess)
-                except:
-                    init_guess = [1e-1, +1, np.max(Phi_trap), -0.01]
-                    paramsx, _ = curve_fit(MorsePotential, X_trap[i1:i2]-x_center, -Phi_trap[i1:i2, y_index], p0=init_guess)
-                
-                fx =  (abs(2 * paramsx[0] * paramsx[1]**2) * 10**(12) * qe/me)**(1/2) * 10**(-9)/(2 * 3.14)
-                fy =  (abs(2 * paramsy[0] * paramsy[1]**2) * 10**(12) * qe/me)**(1/2) * 10**(-9)/(2 * 3.14)
-                h = hbar * 2 * pi
-                amharmY = fy ** 2 / (2 * paramsy[0] * qe * 1e-9 / h)
-
-                if plot:
-                    plt.figure(figsize=(4,4))
-                    plt.plot(Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], 'o')
-                    xtemp = np.linspace(-fitspan/2, fitspan/2,51)
-                    plt.plot(xtemp, MorsePotential(xtemp, *paramsy))
-                    plt.show()
-                
-                return fx, fy, amharmY, paramsx[3], paramsy[3]
-            
-            except:
-                return float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
-        else:
-            return float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
-
-
-    def get_trapfreq_HarmonicApprox(self, 
-                                    X_trap: list, 
-                                    Y_trap: list, 
-                                    Phi_trap: list, 
-                                    plot=False, 
-                                    fitspan=0.1):
-        '''
-        calculates motional frequency from using a harmonical approximation of the trap
-        '''
-        ij_max = find_max_index(Phi_trap)
-        x_index = ij_max[0]
-        y_index = ij_max[1]
-        x_center = X_trap[ij_max[0]]
-        y_center = Y_trap[ij_max[1]]
-
-        if center_within_area(x_center, y_center, X_trap, Y_trap, tol=0.1):
-            try:
-                i1 = find_nearest(X_trap, x_center - fitspan/2)
-                i2 = find_nearest(X_trap, x_center + fitspan/2)
-                j1 = find_nearest(Y_trap, y_center - fitspan/2)
-                j2 = find_nearest(Y_trap, y_center + fitspan/2)
-                paramsx, _ = curve_fit(HarmonicPotential, X_trap[i1:i2]-x_center, -Phi_trap[i1:i2, y_index], p0=[1e-2, -1e-2, -1e-4, 0.01])
-                paramsy, _ = curve_fit(HarmonicPotential, Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], p0=[1e-2, -1e-2, -1e-4, 0.01])
-                fx = sqrt(2*qe*paramsx[0]/me)/2/pi/1e9/l0
-                fy = sqrt(2*qe*paramsy[0]/me)/2/pi/1e9/l0
-                amharmY = 3*qe*paramsy[1]*hbar/me**2/(2*pi*fy*1e9)**2/2/pi/1e6/l0**4
-
-                if plot:
-                    plt.figure(figsize=(4,4))
-                    plt.plot(Y_trap[j1:j2]-y_center, -Phi_trap[x_index, j1:j2], 'o')
-                    xtemp = np.linspace(-fitspan/2,fitspan/2,51)
-                    plt.plot(xtemp, HarmonicPotential(xtemp, *paramsy))
-                    plt.show()
-                
-                return fx, fy, amharmY
-            
-            except:
-                return float("nan"), float("nan"), float("nan")
-        else:
-            return float("nan"), float("nan"), float("nan")
-    
-
-    def get_e_number_in_trap(self,
-                             couplingConst: dict,
-                             voltages: dict,
-                             device_area: Polygon,
-                             chemical_potential: dict,
-                             helium_depth: float,
-                             escape_electrodes: list,
-                             rounding: bool=True,
-                             device_geom: Polygon=None) -> int:
-
-        """ calculates the number of electrons in the trap
-
-        Args:
-            voltages (dict): set of voltages on electrodes
-            device_area (Polygon): the area of interest
-            chemical_potential (dict): chemical potential values. optional: can follow barrier during unloading
-                value (float)
-                barrier_follow (bool)
-                barrier_zone (tuple): defines (xmin, xmax) where barrier is located
-            helium_depth (float): helium layer thickness
-            plot (tuple, optional): visualize the density distribution - (bool, device). Defaults to None.
-
-        Returns:
-            int: number of electrons
-        """
-
-        xlist, ylist, potential = self.potential(couplingConst, voltages)
-        xx, yy = np.meshgrid(xlist, ylist)
-        dx = np.abs(xlist[1] - xlist[0])
-        dy = np.abs(ylist[1] - ylist[0])
-
-        if device_area:
-            mask = np.vectorize(inside_trap, excluded=["geom"])(device_area, xx, yy)
-            mx = ma.masked_array(np.transpose(potential), mask=np.invert(mask))
-        else:
-            mx = np.transpose(potential)
-
-        if chemical_potential["barrier_follow"]:
-            mid_idx = int((len(ylist) - 1)/2)
-            potential_y_equal_zero = mx[mid_idx, :]
-            mu_e = np.min(get_cropped_data(xlist, chemical_potential["barrier_zone"], potential_y_equal_zero))
-            isolated_trap = True
-            if mu_e > chemical_potential["value"]:
-                mu_e = chemical_potential["value"]
-                isolated_trap = False
-        else:
-            mu_e = chemical_potential["value"]
-            isolated_trap = True
-
-        escape_voltage = max([voltages[e] for e in escape_electrodes])
-        if mu_e < escape_voltage:
-            isolated_trap = False
-            mu_e = escape_voltage
-
-        if mu_e > np.max(mx):
-            isolated_trap = False
-            return 0, isolated_trap
-        
-        potential_xcut = potential[:, int((len(ylist) - 1)/2)]
-        trap_exist = xlist[argrelextrema(potential_xcut, np.greater)[0]]
-        if trap_exist.size==0:
-            isolated_trap = False
-            return 0, isolated_trap
-
-        scale = epsilon_He * epsilon_0/(qe * helium_depth) * dx * dy * 1e-12
-        dens = mx - mu_e
-        dens_true = ma.masked_where(dens <= 0, dens)
-        
-        if (dens_true.all() is ma.masked):
-            isolated_trap = False
-            return 0, isolated_trap
-        
-        N_e = scale * np.sum(dens_true)
-        if rounding:
-            N_e = round(N_e)
-
-        if device_geom:
-            fig = plt.figure(figsize=(8, 3))
-            ax = fig.add_subplot(111)
-
-            plot_polygon(device_geom, ax=ax, add_points=False, color='white', edgecolor=BLACK)
-            ax.pcolormesh(xlist, ylist, dens_true)
-            ax.contour(xlist, ylist, np.transpose(potential), [chemical_potential["value"],], colors=(ORANGE,), linestyles="--")
-            ax.set_title(f"$N_e$ = {N_e}")
-            ax.set_ylabel('$y$ (um)')
-            ax.set_xlabel('$x$ (um)')
-            plt.tight_layout()
-            plt.show()
-
-        return N_e, isolated_trap
 
 
 ###########################################
@@ -420,28 +34,29 @@ class QubitAnalyzer(FieldAnalyzer):
 class ExperimentCompanion():
 
     def __init__(self,
-                 coupling_constants: dict=None,
+                 couplings: FieldAnalyzer=None,
+                 voltages: dict=None,
                  dot_area: Polygon=None,
-                 links: dict=None,
-                 exp_voltages: dict=None,
                  fit_function: str="auto",
                  resonator_params: dict=None,
-                 Ez_coupling_constants: dict=None,
+                 Ez_couplings: dict=None,
                  trapmin_search_exclude_area: Polygon=None,
-                 filter_data: bool=False) -> None:
+                 filter_data: bool=False
+                 ) -> None:
 
-        self.coupling_constants = coupling_constants
+        self.couplings = couplings
+        self.voltages = voltages
         self.dot_area = dot_area
-        self.links = links
+        
         self.fit_function = fit_function
         self.resonator_params = resonator_params
         self.trapmin_search_exclude_area = trapmin_search_exclude_area
         self.filter_data = filter_data
-        self.cropped_coupling_constants = self.crop_data(coupling_constants)
-        self.Ez_coupling_constants = Ez_coupling_constants
-        self.voltages = self.get_voltages(exp_voltages)
+        self.cropped_couplings = self.crop_data(couplings)
+        self.Ez_couplings = Ez_couplings
+
         self.update()
-        self.qa = QuantumAnalysis(potential_dict=self.cropped_coupling_constants, voltage_dict=self.voltages)
+        self.qa = QuantumAnalysis(potential_dict=self.cropped_couplings, voltage_dict=self.voltages)
     
     def update(self) -> None:
         """
@@ -464,35 +79,16 @@ class ExperimentCompanion():
                         resonator_type = "1/2"
                     self.set_rf_interpolator(electrode_names, resonator_type)
                     self.dot = self.merge_dicts(self.dot, self.extract_coupling(self.resonator_params))
-    
-    def merge_dicts(self, dict1: dict, dict2: dict) -> dict:
-        return {**dict1, **dict2}
-    
-    def get_voltages(self, voltages: dict) -> None:
-        """
-        Retrieves the voltages for the qubit calculation.
 
-        Args:
-            voltages (dict): A dictionary containing the voltages for each experiment.
-
-        Returns:
-            dict: A dictionary containing the voltages for each FEM.
-        """
-        voltages_for_fem = {}
-        if self.links:
-            for fem_name, exp_name in self.links.items():
-                voltages_for_fem[fem_name] = voltages[exp_name] if exp_name else 0
-        else:
-            voltages_for_fem = voltages
-
-        return voltages_for_fem
     
     def print_voltages(self) -> None:
         print(tabulate(prepare_to_tabulate(self.voltages), tablefmt='fancy_grid', floatfmt=".2f"))
     
+
     def print_frequencies(self) -> None:
         print_nested_dict(self.extract_frequency(type="auto", alongaxis="x"), add_text=" (x)")
         print_nested_dict(self.extract_frequency(type="harmonic", alongaxis="y"), add_text=" (y)")
+
 
     def get_potential(self, voltages: dict=None, cropped: bool=True) -> dict:
         """ Calculates the potential based on the coupling constants and voltages.
@@ -508,9 +104,9 @@ class ExperimentCompanion():
                     and the calculated potential data.
         """
         if cropped:
-            cc_dict = self.cropped_coupling_constants
+            cc_dict = self.cropped_couplings
         else:
-            cc_dict = self.coupling_constants
+            cc_dict = self.couplings
 
         nx, ny = len(cc_dict['xlist']), len(cc_dict['ylist'])
         data = np.zeros((nx, ny), dtype=np.float64)
@@ -538,12 +134,12 @@ class ExperimentCompanion():
         mask = np.transpose(mask)
         return mask
     
-    def crop_data(self, coupling_constants: dict=None) -> dict:
+    def crop_data(self, couplings: dict=None) -> dict:
         """
         Crop the coupling constants based on the dot area.
 
         Args:
-            coupling_constants (dict): A dictionary containing the coupling constants, with keys 'xlist' and 'ylist'
+            couplings (dict): A dictionary containing the coupling constants, with keys 'xlist' and 'ylist'
                                         representing the x and y coordinates, and other keys representing the coupling values.
 
         Returns:
@@ -551,20 +147,20 @@ class ExperimentCompanion():
                     and other keys have their corresponding values masked based on the dot area.
         """
 
-        mask = self.make_mask(coupling_constants.get('xlist'),
-                                coupling_constants.get('ylist'),
+        mask = self.make_mask(couplings.get('xlist'),
+                                couplings.get('ylist'),
                                 self.dot_area)
 
-        cropped_coupling_constants = {}
-        for (k, v) in coupling_constants.items():
+        cropped_couplings = {}
+        for (k, v) in couplings.items():
             if k == 'xlist' or k == 'ylist':
-                cropped_coupling_constants[k] = v
+                cropped_couplings[k] = v
             else:
                 if self.filter_data:
                     v = gaussian_filter(v, 2)
-                cropped_coupling_constants[k] = ma.masked_array(v, mask=mask)
+                cropped_couplings[k] = ma.masked_array(v, mask=mask)
 
-        return cropped_coupling_constants
+        return cropped_couplings
     
     def check_dot(self, tol=0.04):
         """
@@ -585,8 +181,8 @@ class ExperimentCompanion():
         phi = self.potential
 
         if self.trapmin_search_exclude_area:
-            mask = self.make_mask(self.cropped_coupling_constants.get('xlist'),
-                                  self.cropped_coupling_constants.get('ylist'),
+            mask = self.make_mask(self.cropped_couplings.get('xlist'),
+                                  self.cropped_couplings.get('ylist'),
                                   self.trapmin_search_exclude_area)
             exclusion_mask = np.invert(mask)
             potential = ma.masked_array(phi["data"], mask=exclusion_mask)
@@ -908,7 +504,7 @@ class ExperimentCompanion():
         capacitance_change = qe**2 * electric_field**2/(me * (omega_electron**2 - omega_resonator_diff**2))     # in F
         frequency_shift = -f_resonator_diff * capacitance_change/C_total                                        # in Hz
 
-        pressing_field = self.Ez(self.Ez_coupling_constants, coords=(xe, ye))                                   # in V/cm                                
+        pressing_field = self.Ez(self.Ez_couplings, coords=(xe, ye))                                   # in V/cm                                
 
         coupling_g_omega_units = coupling_g * 2 * np.pi
         alternative_frequency_shift = -f_resonator_diff * 2 * coupling_g_omega_units**2/(omega_electron**2 - omega_resonator_diff**2)

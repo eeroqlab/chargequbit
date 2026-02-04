@@ -6,6 +6,7 @@ from numpy.typing import ArrayLike
 from numpy import ma
 from typing import List, Optional
 from tabulate import tabulate
+from dataclasses import dataclass
 
 from scipy.optimize import curve_fit
 from scipy.ndimage import gaussian_filter
@@ -16,7 +17,7 @@ from shapely.plotting import plot_polygon
 from itertools import product
 
 from zeroheliumkit.src.core import Structure
-from zeroheliumkit.fem.fieldreader import FieldAnalyzer
+from zeroheliumkit.fem.fieldreader import FieldAnalyzer, CouplingConstants, generate_mask
 from zeroheliumkit.src.settings import *
 from zeroheliumkit.helpers.constants import *
 from quantum_electron.schrodinger_solver import QuantumAnalysis
@@ -26,37 +27,59 @@ from utils import *
 frequency_scale = 1e6 * np.sqrt(2 * qe/me) * 1e-9/(2 * np.pi)
 l0 = 1e-6
 
+def convert_couplings_to_dict(couplings: CouplingConstants) -> dict:
+    """ Converts CouplingConstants object to a dictionary.
+
+    Args:
+        couplings (CouplingConstants): CouplingConstants object.
+
+    Returns:
+        dict: Dictionary containing the coupling constants.
+    """
+    couplings_dict = {
+        'xlist': couplings.xlist,
+        'ylist': couplings.ylist,
+    }
+    for k in couplings.data.keys():
+        couplings_dict[k] = couplings.data(k)
+    return couplings_dict
 
 ###########################################
 #### MAIN Class for Qubit Analysis ########
 ###########################################
 
-class ExperimentCompanion():
+@dataclass
+class Trap:
+    ij: tuple[int, int]
+    xy: tuple[float, float]
+    value: float
+
+@dataclass
+class QubitProperties:
+    exist: bool=False
+    trap: Optional[Trap] = None
+
+class ExperimentCompanion(FieldAnalyzer):
 
     def __init__(self,
-                 couplings: FieldAnalyzer=None,
-                 voltages: dict=None,
-                 dot_area: Polygon=None,
-                 fit_function: str="auto",
+                 couplings: CouplingConstants=None,
                  resonator_params: dict=None,
                  Ez_couplings: dict=None,
-                 trapmin_search_exclude_area: Polygon=None,
-                 filter_data: bool=False
+                 fit_function: str="auto",
+                 trapmin_search_exclude_area: Polygon=None
                  ) -> None:
 
         self.couplings = couplings
-        self.voltages = voltages
-        self.dot_area = dot_area
-        
-        self.fit_function = fit_function
         self.resonator_params = resonator_params
-        self.trapmin_search_exclude_area = trapmin_search_exclude_area
-        self.filter_data = filter_data
-        self.cropped_couplings = self.crop_data(couplings)
         self.Ez_couplings = Ez_couplings
 
+        self.fit_function = fit_function
+        self.trapmin_search_exclude_area = trapmin_search_exclude_area
+
         self.update()
-        self.qa = QuantumAnalysis(potential_dict=self.cropped_couplings, voltage_dict=self.voltages)
+        self.qa = QuantumAnalysis(potential_dict=convert_couplings_to_dict(couplings), voltage_dict=None)
+
+        self.qubit = QubitProperties()
     
     def update(self) -> None:
         """
@@ -89,159 +112,29 @@ class ExperimentCompanion():
         print_nested_dict(self.extract_frequency(type="auto", alongaxis="x"), add_text=" (x)")
         print_nested_dict(self.extract_frequency(type="harmonic", alongaxis="y"), add_text=" (y)")
 
-
-    def get_potential(self, voltages: dict=None, cropped: bool=True) -> dict:
-        """ Calculates the potential based on the coupling constants and voltages.
+    
+    def check_dot(self, tol: float=0.01):
+        """
+        Checks for the existence of a quantum dot by finding the maximum potential value within a specified search area.
 
         Args:
-        ____
-            voltages (dict): A dictionary containing the voltages for each experiment.
-            cropped (bool): A boolean indicating whether cropped coupling constants to be used or not.
-
-        Returns:
-        ----
-            dict: A dictionary containing the x and y values of the coupling constants,
-                    and the calculated potential data.
+            tol (float, optional): Tolerance value for determining the existence of the dot. Defaults to 0.04.
         """
-        if cropped:
-            cc_dict = self.cropped_couplings
+
+        if self.trap_search_area:
+            exclusion_mask = generate_mask(self.couplings.x, self.couplings.y, self.trap_search_area)
         else:
-            cc_dict = self.couplings
+            exclusion_mask = None
 
-        nx, ny = len(cc_dict['xlist']), len(cc_dict['ylist'])
-        data = np.zeros((nx, ny), dtype=np.float64)
+        ix, iy = find_maxvalue_indicies(self.potential, exclude_area=exclusion_mask)
+        center = (self.couplings.x[ix], self.couplings.y[iy])
 
-        for (k, alpha) in cc_dict.items():
-            if k not in ['xlist', 'ylist']:
-                data = data + voltages.get(k) * alpha
-
-        potential = {'x': cc_dict['xlist'],
-                     'y': cc_dict['ylist'],
-                     'data': data}
-
-        return potential
-    
-    def make_mask(self, x: list, y: list, mask_area: Polygon=None) -> np.ndarray:
-        """
-        Creates a mask based on the dot area.
-
-        Returns:
-            np.ndarray: A 2D array representing the mask.
-        """
-        yy, xx = np.meshgrid(x, y)
-        mask = np.vectorize(inside_trap, excluded=["geom"])(mask_area, yy, xx)
-        mask = np.invert(mask)
-        mask = np.transpose(mask)
-        return mask
-    
-    def crop_data(self, couplings: dict=None) -> dict:
-        """
-        Crop the coupling constants based on the dot area.
-
-        Args:
-            couplings (dict): A dictionary containing the coupling constants, with keys 'xlist' and 'ylist'
-                                        representing the x and y coordinates, and other keys representing the coupling values.
-
-        Returns:
-            dict: A dictionary containing the cropped data, where the 'xlist' and 'ylist' keys remain unchanged,
-                    and other keys have their corresponding values masked based on the dot area.
-        """
-
-        mask = self.make_mask(couplings.get('xlist'),
-                                couplings.get('ylist'),
-                                self.dot_area)
-
-        cropped_couplings = {}
-        for (k, v) in couplings.items():
-            if k == 'xlist' or k == 'ylist':
-                cropped_couplings[k] = v
-            else:
-                if self.filter_data:
-                    v = gaussian_filter(v, 2)
-                cropped_couplings[k] = ma.masked_array(v, mask=mask)
-
-        return cropped_couplings
-    
-    def check_dot(self, tol=0.04):
-        """
-        Check if a trapping potential exists within the dot_area reduced by specified tolerance
-
-        Parameters:
-        - tol (float): Tolerance value for determining the dot area. Default is 0.04.
-
-        Returns:
-        - dict: A dictionary containing the following information:
-            - "exists" (bool): True if a trap exists within the tolerance, False otherwise.
-            - "trap" (dict): A dictionary containing the trap information if it exists, with the following keys:
-                - "ij" (tuple): Indices of the minimum of potential energy.
-                - "x" (float): x-coordinate of the minimum of potential energy.
-                - "y" (float): y-coordinate of the minimum of potential energy.
-                - "value" (float): Value of the minimum of potential energy (in V).
-        """
-        phi = self.potential
-
-        if self.trapmin_search_exclude_area:
-            mask = self.make_mask(self.cropped_couplings.get('xlist'),
-                                  self.cropped_couplings.get('ylist'),
-                                  self.trapmin_search_exclude_area)
-            exclusion_mask = np.invert(mask)
-            potential = ma.masked_array(phi["data"], mask=exclusion_mask)
+        reduced_dot_area = self.trap_search_area.buffer(-tol, join_style="mitre")
+        if inside_trap(reduced_dot_area, *center):
+            self.qubit.exist = True
+            self.qubit.trap = Trap(ij=(ix, iy), xy=center, value=self.potential[ix, iy])
         else:
-            potential = phi["data"]
-
-        center_x_idx, center_y_idx = find_maxvalue_indicies(potential)
-        center_x = phi["x"][center_x_idx]
-        center_y = phi["y"][center_y_idx]
-
-        reduced_dot_area = self.dot_area.buffer(-tol, join_style="mitre")
-
-        if inside_trap(reduced_dot_area, center_x, center_y):
-            return {"exists": True,
-                    "trap": {"ij": (center_x_idx, center_y_idx),
-                             "x": center_x,
-                             "y": center_y,
-                             "value": phi["data"][center_x_idx, center_y_idx]
-                             }
-                    }
-        else:
-            return {"exists": False}
-    
-    def check_barrier(self):
-        """
-        Calculates the barrier height and trap depth of the quantum dot.
-
-        Returns:
-            dict: A dictionary containing the barrier information.
-                - "ij" (tuple): The coordinate of the barrier location.
-                - "x" (float): The x-coordinate of the leftmost point of the barrier.
-                - "y" (int): The y-coordinate of the barrier (always 0).
-                - "value" (float): The value of the barrier.
-                - "height" (float): The difference between the trap height and the barrier value.
-        """
-        cm_idx = self.dot["trap"]["ij"]    # coordinate of minimum of potential energy
-        y_center_idx = int((len(self.potential["y"]) - 1)/2)
-
-        # allowed area bounds
-        dot_area_xmin, _, dot_area_xmax, _ = self.dot_area.bounds
-        idx1 = find_nearest_value_index(self.potential["x"], dot_area_xmin)
-        idx2 = find_nearest_value_index(self.potential["x"], dot_area_xmax)
-
-        # we need to determine where (left/right) the barrier is located
-        left_barrier = self.potential["data"][idx1:cm_idx[0], y_center_idx]
-        right_barrier = self.potential["data"][cm_idx[0]:idx2, y_center_idx]
-
-        barrier_value_left = np.min(left_barrier)
-        barrier_value_right = np.min(right_barrier)
-
-        barrier_value = max(barrier_value_left, barrier_value_right)
-        trap_depth = np.abs(self.dot["trap"]["value"] - barrier_value)
-
-        return {"barrier": {"ij": (idx1, y_center_idx),
-                            "x": self.potential["x"][idx1],
-                            "y": 0,
-                            "value": barrier_value,
-                            "height": trap_depth}
-                            }
+            self.qubit.exist = False
 
 
     def fit_dot(self,

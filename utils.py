@@ -92,3 +92,51 @@ def print_nested_dict(d: dict, add_text: str = ""):
 
 def merge_dicts(dict1: dict, dict2: dict) -> dict:
         return {**dict1, **dict2}
+
+
+def construct_symmetric_y(ymin: float, N: int) -> np.ndarray:
+    """
+    This helper function constructs a one-sided array from ymin to -dy/2 with N points.
+    The spacing is chosen such that, when mirrored around y = 0, the spacing is constant.
+
+    This requirement limits our choice for dy, because the spacing must be such that there's
+    an integer number of points in yeval. This can only be the case if
+    dy = 2 * ymin / (2*k+1) and Ny = ymin / dy - 0.5 + 1
+    yeval = y0, y0 - dy, ... , -3dy/2, -dy/2
+
+    Args:
+        ymin (float): Most negative value
+        N (int): Number of samples in the one-sided array
+    
+    Returns:
+        np.ndarray: One-sided array of length N.
+    """
+    dy = 2 * np.abs(ymin) / float(2 * N + 1)
+    return np.linspace(ymin, -dy / 2., int((np.abs(ymin) - 0.5 * dy) / dy + 1))
+
+
+def find_minimum_location(
+        x: np.ndarray,
+        y: np.ndarray,
+        potential: np.ndarray,
+        return_potential_value: bool = False
+        ) -> tuple[float, float]:
+    """Find the coordinates of the minimum energy point for a single electron.
+
+    Args:
+        x (np.ndarray): The x-coordinates.
+        y (np.ndarray): The y-coordinates.
+        potential (np.ndarray): The potential energy landscape.
+        return_potential_value (bool): If True, also return the potential value at the minimum location.
+
+    Returns:
+        tuple[float, float]: (x_min, y_min, V_min) where the potential energy for a single electron is minimized. Units are in micron, eV.
+    """
+
+    zdata = -potential
+    yidx, xidx = np.unravel_index(zdata.argmin(), zdata.shape)
+
+    if return_potential_value:
+        return x[xidx], y[yidx], zdata[yidx, xidx]
+    else:
+        return x[xidx], y[yidx]

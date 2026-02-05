@@ -2,30 +2,86 @@ import scipy
 import numpy as np
 import matplotlib
 
-from typing import List, Optional
+from typing import List, Optional, Callable
 from itertools import product
 from matplotlib import pyplot as plt
 from numpy.typing import ArrayLike
-from numpy.linalg import eigh
 from scipy import sparse
 from scipy.sparse.linalg import eigsh
 from scipy.constants import hbar, m_e, elementary_charge as q_e
+from dataclasses import dataclass
 
-from .utils import find_minimum_location
+def find_minimum_location(
+        x: np.ndarray,
+        y: np.ndarray,
+        potential: np.ndarray,
+        return_potential_value: bool = False
+        ) -> tuple[float, float]:
+    """Find the coordinates of the minimum energy point for a single electron.
+
+    Args:
+        x (np.ndarray): The x-coordinates.
+        y (np.ndarray): The y-coordinates.
+        potential (np.ndarray): The potential energy landscape.
+        return_potential_value (bool): If True, also return the potential value at the minimum location.
+
+    Returns:
+        tuple[float, float]: (x_min, y_min, V_min) where the potential energy for a single electron is minimized. Units are in micron, eV.
+    """
+
+    zdata = -potential
+    yidx, xidx = np.unravel_index(zdata.argmin(), zdata.shape)
+
+    if return_potential_value:
+        return x[xidx], y[yidx], zdata[yidx, xidx]
+    else:
+        return x[xidx], y[yidx]
+
+@dataclass
+class ScalingFactors:
+    """
+    Sets the scales of the Schrodinger equation: k * \Delta \psi + u * V(x) * \psi = E * psi
+        k = -hbar**2 / 2 m
+        u = -e
+        E = 1
+        f = 1/(2 * pi * hbar))
+    """
+    k: float  # Kinetic energy scaling factor
+    u: float  # Potential energy scaling factor
+    E: float  # Energy scaling factor
+    f: float  # Frequency scaling factor
+
+    def __init__(self, x_unit: float=1e-6):
+        Escale = 2 * m_e * x_unit**2 / hbar**2
+        self.k = -1
+        self.u = -q_e * Escale
+        self.E = Escale
+        self.f = 1 / Escale / hbar / 2 / np.pi
 
 
 class Schrodinger:
     """Abstract class for solving the 1D and 2D Schrodinger equation 
     using finite differences and sparse matrices"""
 
-    def __init__(self, sparse_args=None, solve=True):
+    def __init__(
+            self,
+            x: np.ndarray,
+            y: np.ndarray,
+            U: np.ndarray,
+            x_unit: float = 1e-6,
+            sparse_args: Optional[dict] = None, 
+            solve: bool = True
+        ) -> None:
         """ 
         Args:
             sparse_args (dict, optional): Arguments for the eigsh sparse solver.
             solve (bool, optional): If True, then it will immediately construct the Hamiltonian
                 and solve for the eigenvalues. Defaults to True.
         """
-        self.solved = False
+        self.x = x
+        self.y = y
+        self.U = U
+        self.scales = ScalingFactors(x_unit)
         self.sparse_args = sparse_args
         self.solved = False
         if solve:
@@ -67,12 +123,61 @@ class Schrodinger:
         U2 = self.U[1:-1, 1:-1]
 
         Uflat = U2.reshape(-1)
-        Vmat = sparse.spdiags([Uflat], [0], len(Uflat), len(Uflat))
+        Vmat = sparse.spdiags([Uflat], [0], len(Uflat), len(Uflat)) * self.scales.u
 
         Ix = sparse.identity(nx_i, format="csr")
         Iy = sparse.identity(ny_i, format="csr")
-        Kmat = sparse.kron(-self.KEy * D2y, Ix, format="csr") + sparse.kron(Iy, -self.KEx * D2x, format="csr")
+        Kmat = sparse.kron(self.scales.k * D2y, Ix, format="csr") + \
+            sparse.kron(Iy, self.scales.k * D2x, format="csr")
+        
+        print(self.scales.k, self.scales.u)
         return Kmat + Vmat
+
+
+    def solve(self, sparse_args=None):
+        """
+        Solve the Schrodinger equation for the current Hamiltonian.
+
+        Parameters
+        ----------
+        sparse_args : dict or None
+            Arguments passed to scipy.sparse.linalg.eigsh.
+            If None, a dense Hermitian solver is used (only safe for small grids).
+        """
+        H = self.Hamiltonian()
+
+        if sparse_args is not None:
+            self.sparse_args = sparse_args
+
+        # Default to sparse solver for realistic grid sizes
+        if self.sparse_args is None:
+            # Dense path: Hermitian solver
+            H_dense = H.toarray()
+            en, ev = np.linalg.eigh(H_dense)
+        else:
+            en, ev = eigsh(H, **self.sparse_args)
+
+        # Sort eigenpairs
+        idx = np.argsort(en)
+        self.en = en[idx]
+        self.ev = ev[:, idx].T  # (n_levels, n_basis)
+
+        self.solved = True
+        return self.en, self.ev
+
+
+    def energies(self, num_levels=-1):
+        """returns eigenvalues of Hamiltonian (solves if not already solved)"""
+        if not self.solved:
+            self.solve()
+        return self.en[:num_levels]
+
+    def psis(self, num_levels=-1):
+        """returns eigenvectors of Hamiltonian (solves if not already solved)"""
+        if not self.solved:
+            self.solve()
+        return self.ev[:num_levels]
+
 
     def get_2Dpsis(self, num_levels=-1):
         """Return eigenfunctions on the full (ny, nx) grid.
@@ -82,11 +187,11 @@ class Schrodinger:
         """
         nx = len(self.x)
         ny = len(self.y)
-        nx_i = nx if self.periodic_x else nx - 2
-        ny_i = ny if self.periodic_y else ny - 2
+        nx_i = nx - 2
+        ny_i = ny - 2
 
-        xs = slice(None) if self.periodic_x else slice(1, -1)
-        ys = slice(None) if self.periodic_y else slice(1, -1)
+        xs = slice(1, -1)
+        ys = slice(1, -1)
 
         psis_full = []
         for psi in self.psis(num_levels):
@@ -121,7 +226,15 @@ class Schrodinger:
 
 
 class SingleElectron(Schrodinger):
-    def __init__(self, x, y, potential_function, sparse_args=None, solve=True):
+    def __init__(
+            self,
+            x: np.ndarray,
+            y: np.ndarray,
+            x_unit: float,
+            potential_function: Callable[[np.ndarray, np.ndarray], np.ndarray],
+            sparse_args: Optional[dict] = None,
+            solve: bool = True
+        ) -> None:
         """
         https://docs.scipy.org/doc/scipy-0.19.1/reference/generated/generated/scipy.sparse.linalg.eigsh.html
         potential_function: a function that takes as arguments a meshgrid of x, y coordinates. For a positive voltage on the
@@ -129,20 +242,15 @@ class SingleElectron(Schrodinger):
         """
         self.x = x
         self.y = y
-
-        self.numxpts = len(x)
-        self.numypts = len(y)
-
         self.potential = potential_function
 
         Vxy = self.evaluate_potential(self.x, self.y)
-        Schrodinger.__init__(self, x=self.x, y=self.y, U=Vxy, KEx=1, KEy=1,
-                               periodic_x=False, periodic_y=False, qx=0, qy=0,
-                               sparse_args=sparse_args, solve=solve)
+        Schrodinger.__init__(self, x=self.x, y=self.y, U=Vxy, x_unit=x_unit, sparse_args=sparse_args, solve=solve)
 
     def evaluate_potential(self, x, y):
         X, Y = np.meshgrid(x, y)
-        return + 2 * m_e * q_e * self.potential((X, Y)) / hbar ** 2
+        U = self.potential((X, Y))
+        return U - np.max(U)  # Shift potential so that the maximum is at 0
 
     def sparsify(self, num_levels=10):
         self.U = self.evaluate_potential(self.x, self.y)
@@ -161,7 +269,7 @@ class QuantumAnalysis():
     qa.get_quantum_spectrum(coor=None, dxdy=[.8, .8])
     """
 
-    def __init__(self, x: np.ndarray, y: np.ndarray, potential: np.ndarray):
+    def __init__(self, x: np.ndarray, y: np.ndarray, potential: np.ndarray, x_unit: float = 1e-6):
         """Class for solving quantum properties of a single electron trapped in a dot
 
         Args:
@@ -170,11 +278,10 @@ class QuantumAnalysis():
             voltage_dict (Dict[str, float]): Dictionary with electrode names as keys. The value associated with each key is the voltage
             applied to each electrode
         """
-        self.x = x*1e-6  # Convert to meters
-        self.y = y*1e-6  # Convert to meters
+        self.x = x  # Convert to meters
+        self.y = y  # Convert to meters
+        self.x_unit = x_unit            # defaults to 1 um
         self.potential = potential
-        # self.potential_dict = potential_dict
-        # self.voltage_dict = voltage_dict
         self.solved = False
 
         # PotentialVisualization.__init__(self, potential)
@@ -206,11 +313,13 @@ class QuantumAnalysis():
         """
         # If not specified as a function argument, coor will be the minimum of the potential
         if coor is None:
-            coor = find_minimum_location(self.potential)
+            coor = find_minimum_location(self.x, self.y, self.potential)
+        
+        print(coor)
 
         # Note that xsol and ysol determine the x and y points for which you want to solve the Schrodinger equation
-        self.xsol = np.linspace(coor[0] - dxdy[0]/2, coor[0] + dxdy[0]/2, n_x) * 1e-6
-        self.ysol = np.linspace(coor[1] - dxdy[1]/2, coor[1] + dxdy[1]/2, n_y) * 1e-6
+        self.xsol = np.linspace(coor[0] - dxdy[0]/2, coor[0] + dxdy[0]/2, n_x)
+        self.ysol = np.linspace(coor[1] - dxdy[1]/2, coor[1] + dxdy[1]/2, n_y)
         # Cache solution grid and integration element
         self.Xsol, self.Ysol = np.meshgrid(self.xsol, self.ysol)
         self.dx = float(self.xsol[1] - self.xsol[0])
@@ -227,25 +336,25 @@ class QuantumAnalysis():
         # This is useful if the original potential data is sparsely sampled (e.g. due to FEM time constraints)
         # Build a potential interpolator; handle common (ny, nx) array layout explicitly
         if self.potential.shape == (len(self.y), len(self.x)):
-            _rgi = scipy.interpolate.RegularGridInterpolator((self.y, self.x), -self.potential)
+            _rgi = scipy.interpolate.RegularGridInterpolator((self.y, self.x), self.potential)
             potential_function = lambda XY: _rgi((XY[1], XY[0]))  # accepts (X, Y) tuple
         elif self.potential.shape == (len(self.x), len(self.y)):
-            _rgi = scipy.interpolate.RegularGridInterpolator((self.x, self.y), -self.potential)
+            _rgi = scipy.interpolate.RegularGridInterpolator((self.x, self.y), self.potential)
             potential_function = lambda XY: _rgi(XY)
         else:
             raise ValueError(f"Potential shape {self.potential.shape} does not match (ny,nx)=({len(self.y)},{len(self.x)}) or (nx,ny)=({len(self.x)},{len(self.y)})")
 
         # Note that the solution is sampled over the arrays xsol, ysol which can be set indepently from the FEM x and y points.
-        se = SingleElectron(self.xsol, self.ysol,
+        se = SingleElectron(self.xsol, self.ysol, self.x_unit,
                             potential_function=potential_function, solve=False)
         se.sparsify(num_levels=N_evals)
         Evals, Evecs = se.solve(sparse_args=se.sparse_args)
 
         self.Psis = se.get_2Dpsis(N_evals)
-        self.mode_frequencies = (
-            Evals - Evals[0]) * hbar**2 / (2 * q_e * m_e) * q_e / (2 * np.pi * hbar)
+        self.mode_frequencies = (Evals - Evals[0]) * se.scales.f  # in Hz
 
         self.solved = True
+        # return self.xsol, self.ysol, potential_function
 
     def classify_wavefunction_by_well(self) -> ArrayLike:
         """This function classifies the wavefunctions by well. If the potential has a double well, the wave function will be marked with +1 or -1. 
@@ -267,9 +376,9 @@ class QuantumAnalysis():
             x_com = np.mean(np.abs(self.Psis[k])
                             * X) / np.mean(np.abs(self.Psis[k]))
 
-            if y_com > 0.1e-6:
+            if y_com > 0.1:
                 well_classification.append(+1)
-            elif y_com < -0.1e-6:
+            elif y_com < -0.1:
                 well_classification.append(-1)
             else:
                 well_classification.append(0)
@@ -329,7 +438,7 @@ class QuantumAnalysis():
             tuple[ArrayLike, ArrayLike]: Eigenfrequencies of the first N motional modes in Hz, and a classification of the mode.
         """
         if coor is None:
-            coor = find_minimum_location(self.potential)
+            coor = find_minimum_location(self.x, self.y,self.potential)
 
         if not self.solved:
             self.solve_system(coor=coor, dxdy=dxdy, **solve_kwargs)
@@ -343,7 +452,7 @@ class QuantumAnalysis():
         for k in range(6):
             if plot_wavefunctions:
                 plt.subplot(2, 3, k+1)
-                plt.pcolormesh(self.xsol/1e-6, self.ysol/1e-6, self.Psis[k], cmap=plt.cm.RdBu_r,
+                plt.pcolormesh(self.xsol, self.ysol, self.Psis[k], cmap=plt.cm.RdBu_r,
                                vmin=-np.max(np.abs(self.Psis[k])),
                                vmax=np.max(np.abs(self.Psis[k])))
                 cbar = plt.colorbar()
@@ -369,13 +478,13 @@ class QuantumAnalysis():
                     x_com = np.mean(
                         np.abs(self.Psis[k]) * X) / np.mean(np.abs(self.Psis[k]))
 
-                    plt.xlim((x_com/1e-6 - axes_zoom/2),
-                             (x_com/1e-6 + axes_zoom/2))
-                    plt.ylim((y_com/1e-6 - axes_zoom/2),
-                             (y_com/1e-6 + axes_zoom/2))
+                    plt.xlim((x_com - axes_zoom/2),
+                             (x_com + axes_zoom/2))
+                    plt.ylim((y_com - axes_zoom/2),
+                             (y_com + axes_zoom/2))
                 else:
-                    plt.xlim(np.min(self.xsol/1e-6), np.max(self.xsol/1e-6))
-                    plt.ylim(np.min(self.ysol/1e-6), np.max(self.ysol/1e-6))
+                    plt.xlim(np.min(self.xsol), np.max(self.xsol))
+                    plt.ylim(np.min(self.ysol), np.max(self.ysol))
 
                 plt.locator_params(axis='both', nbins=4)
 
@@ -388,7 +497,7 @@ class QuantumAnalysis():
         if plot_wavefunctions:
             fig.tight_layout()
 
-        return self.mode_frequencies
+        # return self.mode_frequencies
 
     def get_anharmonicity(self) -> float:
         """Calculate the anharmonicity. The anharmonicity here is defined as (f|0x2y> - f|0x1y>) - (f|0x1y> - f|0x0y>) 

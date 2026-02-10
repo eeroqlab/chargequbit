@@ -28,17 +28,7 @@ def find_maxvalue_indicies(array, exclude_area=None):
     return max_index
 
 def inside_trap(geom: Polygon, x: float, y: float) -> bool:
-    """
-    Check if a point (x, y) is inside a given polygon.
-
-    Parameters:
-    - geom (Polygon): The polygon to check against.
-    - x (float): The x-coordinate of the point.
-    - y (float): The y-coordinate of the point.
-
-    Returns:
-    - bool: True if the point is inside the polygon, False otherwise.
-    """
+    """ Checks if a point (x, y) is inside a given polygon."""
     return Point(x, y).within(geom)
 
 
@@ -115,13 +105,25 @@ def construct_symmetric_y(ymin: float, N: int) -> np.ndarray:
     return np.linspace(ymin, -dy / 2., int((np.abs(ymin) - 0.5 * dy) / dy + 1))
 
 
+def generate_mask(xlist: list | np.ndarray, ylist: list | np.ndarray, mask_area: Polygon, context: str) -> np.ndarray:
+    assert context in ["inside", "outside"], "Context must be either 'inside' or 'outside'."
+    X, Y = np.meshgrid(xlist, ylist)
+    mask = np.vectorize(inside_trap, excluded=["geom"])(mask_area, X, Y)
+    match context:
+        case "inside":
+            return mask
+        case "outside":
+            return np.invert(mask)
+
+
 def find_min_or_max_location(
         x: np.ndarray,
         y: np.ndarray,
         potential: np.ndarray,
         context: str = "min",
-        return_potential_value: bool = False
-        ) -> tuple[float, float]:
+        inside_area: Polygon | None = None,
+        return_value: bool = False
+        ) -> tuple[tuple[float, float], tuple[float, float], float | None]:
     """Find the coordinates of the minimum or maximum energy point for a potential.
 
     Args:
@@ -129,11 +131,17 @@ def find_min_or_max_location(
         y (np.ndarray): The y-coordinates.
         potential (np.ndarray): The potential energy landscape.
         context (str): Whether to find the "min" or "max" of the potential. Defaults to "min".
-        return_potential_value (bool): If True, also return the potential value at the found location.
+        inside_area (Polygon | None): If provided, only consider points inside this area. Defaults to None.
+        return_value (bool): If True, also return the potential value at the found location.
 
     Returns:
-        tuple[float, float]: (x_min, y_min, V_min).
+        tuple: A tuple containing the indices of the found location, the coordinates of the found location,
+        and optionally the potential value at that location.
     """
+
+    if inside_area is not None:
+        inside_mask = generate_mask(x, y, inside_area, context="inside")
+        potential = ma.masked_array(potential, mask=inside_mask)
 
     if context == "max":
         yidx, xidx = np.unravel_index(potential.argmax(), potential.shape)
@@ -142,7 +150,7 @@ def find_min_or_max_location(
     else:
         raise ValueError(f"Invalid context '{context}'. Use 'min' or 'max'.")
 
-    if return_potential_value:
-        return x[xidx], y[yidx], potential[yidx, xidx]
+    if return_value:
+        return (xidx, yidx), (x[xidx], y[yidx]), potential[yidx, xidx]
     else:
-        return x[xidx], y[yidx]
+        return (xidx, yidx), (x[xidx], y[yidx])

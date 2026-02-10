@@ -9,7 +9,6 @@ from tabulate import tabulate
 from dataclasses import dataclass
 
 from scipy.optimize import curve_fit
-from scipy.ndimage import gaussian_filter
 from scipy.interpolate import RectBivariateSpline
 from matplotlib import gridspec
 from skimage import measure
@@ -20,7 +19,7 @@ from zeroheliumkit.src.core import Structure
 from zeroheliumkit.fem.fieldreader import FieldAnalyzer, CouplingConstants, generate_mask
 from zeroheliumkit.src.settings import *
 from zeroheliumkit.helpers.constants import *
-from quantum_electron.schrodinger_solver import QuantumAnalysis
+from schrodinger2d import QuantumAnalysis
 
 from utils import *
 
@@ -49,6 +48,37 @@ def convert_couplings_to_dict(couplings: CouplingConstants) -> dict:
 ###########################################
 
 @dataclass
+class PotentialClassifier:
+    x: np.ndarray
+    y: np.ndarray
+    data: np.ndarray
+
+    def convex_concave_classification(self, x: float, y: float) -> str:
+        """Classifies the potential at a given point as convex, concave, or saddle based on the second derivatives.
+
+        Args:
+            x (float): The x-coordinate of the point to classify.
+            y (float): The y-coordinate of the point to classify.       
+        """
+        # Calculate second derivatives
+        d2V_dx2 = self.second_derivative(x, y, axis='x')
+        d2V_dy2 = self.second_derivative(x, y, axis='y')
+        d2V_dxdy = self.mixed_second_derivative(x, y)
+
+        # Calculate the determinant of the Hessian
+        D = d2V_dx2 * d2V_dy2 - d2V_dxdy**2
+
+        if D > 0:
+            if d2V_dx2 > 0:
+                return "convex"
+            else:
+                return "concave"
+        elif D < 0:
+            return "saddle"
+        else:
+            return "indeterminate"
+
+@dataclass
 class Trap:
     ij: tuple[int, int]
     xy: tuple[float, float]
@@ -62,23 +92,13 @@ class QubitProperties:
 class ExperimentCompanion(FieldAnalyzer):
 
     def __init__(self,
-                 couplings: CouplingConstants=None,
+                 coupling_constants: CouplingConstants,
                  resonator_params: dict=None,
-                 Ez_couplings: dict=None,
-                 fit_function: str="auto",
                  trapmin_search_exclude_area: Polygon=None
                  ) -> None:
-
-        self.couplings = couplings
+        super().__init__(coupling_constants)
         self.resonator_params = resonator_params
-        self.Ez_couplings = Ez_couplings
-
-        self.fit_function = fit_function
         self.trapmin_search_exclude_area = trapmin_search_exclude_area
-
-        self.update()
-        self.qa = QuantumAnalysis(potential_dict=convert_couplings_to_dict(couplings), voltage_dict=None)
-
         self.qubit = QubitProperties()
     
     def update(self) -> None:

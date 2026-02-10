@@ -115,28 +115,34 @@ def construct_symmetric_y(ymin: float, N: int) -> np.ndarray:
     return np.linspace(ymin, -dy / 2., int((np.abs(ymin) - 0.5 * dy) / dy + 1))
 
 
-def find_minimum_location(
+def find_min_or_max_location(
         x: np.ndarray,
         y: np.ndarray,
         potential: np.ndarray,
+        context: str = "min",
         return_potential_value: bool = False
         ) -> tuple[float, float]:
-    """Find the coordinates of the minimum energy point for a single electron.
+    """Find the coordinates of the minimum or maximum energy point for a potential.
 
     Args:
         x (np.ndarray): The x-coordinates.
         y (np.ndarray): The y-coordinates.
         potential (np.ndarray): The potential energy landscape.
-        return_potential_value (bool): If True, also return the potential value at the minimum location.
+        context (str): Whether to find the "min" or "max" of the potential. Defaults to "min".
+        return_potential_value (bool): If True, also return the potential value at the found location.
 
     Returns:
-        tuple[float, float]: (x_min, y_min, V_min) where the potential energy for a single electron is minimized. Units are in micron, eV.
+        tuple[float, float]: (x_min, y_min, V_min).
     """
 
-    zdata = -potential
-    yidx, xidx = np.unravel_index(zdata.argmin(), zdata.shape)
+    if context == "max":
+        yidx, xidx = np.unravel_index(potential.argmax(), potential.shape)
+    elif context == "min":
+        yidx, xidx = np.unravel_index(potential.argmin(), potential.shape)
+    else:
+        raise ValueError(f"Invalid context '{context}'. Use 'min' or 'max'.")
 
     if return_potential_value:
-        return x[xidx], y[yidx], zdata[yidx, xidx]
+        return x[xidx], y[yidx], potential[yidx, xidx]
     else:
         return x[xidx], y[yidx]

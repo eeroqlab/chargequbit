@@ -1,13 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-
 from numpy import ma
 from itertools import product
 from scipy import optimize
 from scipy.interpolate import make_interp_spline
 from scipy.constants import hbar, elementary_charge, electron_mass
 from matplotlib.cm import tab10
+from dataclasses import dataclass
 
 def mod_kron(N, n, m):
     return (n == m)
@@ -130,6 +130,28 @@ def solve_eigenproblem(H):
     vecs = vecs.T[idx]
 
     return vals, vecs
+
+
+@dataclass
+class ScalingFactors:
+    """
+    Sets the scales of the Schrodinger equation: k * \Delta \psi + u * V(x) * \psi = E * psi
+        k = -hbar**2 / 2 m
+        u = -e
+        E = 1
+        f = 1/(2 * pi * hbar))
+    """
+    k: float  # Kinetic energy scaling factor
+    u: float  # Potential energy scaling factor
+    E: float  # Energy scaling factor
+    f: float  # Frequency scaling factor
+
+    def __init__(self, x_unit: float=1e-6):
+        Escale = 2 * electron_mass * x_unit**2 / hbar**2
+        self.k = -1
+        self.u = -elementary_charge * Escale
+        self.E = Escale
+        self.f = 1 / Escale / hbar / 2 / np.pi
 
 
 class SchrodingerModel():

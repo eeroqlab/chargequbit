@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chargequbit"
+version = "0.1.0"
+description = "analysis tool for eHe charge qubit"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name="Niyaz Beysengulov", email="nbeysengulov@eeroq.com"},
+]
+
+[project.urls]
+Homepage = "https://github.com/eeroqlab/chargequbit"
+
+[tool.setuptools]
+packages = { find = { include = ['src'] } }

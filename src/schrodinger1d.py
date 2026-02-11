@@ -154,7 +154,7 @@ class ScalingFactors:
         self.f = 1 / Escale / hbar / 2 / np.pi
 
 
-class SchrodingerModel():
+class Schrodinger1DSolver():
     def __init__(self, x: list, potential: list, x_unit: float=1e-6):
         self.x = x
         self.potential = -potential     # inverting due to negative electron charge

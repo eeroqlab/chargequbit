@@ -238,7 +238,7 @@ class WavefunctionClassifier:
         fig.tight_layout()
 
 
-class Schrodinger:
+class Solver2D:
     """Abstract class for solving the 2D Schrodinger equation 
     using finite differences and sparse matrices"""
 
@@ -382,7 +382,7 @@ class Schrodinger:
         return self.en[:num_levels]
 
 
-class SingleElectron():
+class Schrodinger2DSolver():
     def __init__(self, x: np.ndarray, y: np.ndarray, potential: np.ndarray, x_unit: float, qaxis: str = 'y'):
         self.x = x
         self.y = y
@@ -448,7 +448,7 @@ class SingleElectron():
 
         Vxy = self.evaluate_potential(xsol, ysol)
         self.sparsify(num_levels=N_evals)
-        solver = Schrodinger(x=xsol, y=ysol, U=Vxy, scales=self.scales, sparse_args=self.sparse_args, solve=False)
+        solver = Solver2D(x=xsol, y=ysol, U=Vxy, scales=self.scales, sparse_args=self.sparse_args, solve=False)
         solver.solve()
 
         self.psis = solver.psis(N_evals)

@@ -2,16 +2,14 @@ import numpy as np
 
 from typing import List, Optional
 from dataclasses import dataclass
-
 from scipy.interpolate import RegularGridInterpolator
-
 from skimage import measure
-
 
 from zeroheliumkit.fem.fieldreader import FieldAnalyzer, CouplingConstants
 from zeroheliumkit.src.settings import *
 from zeroheliumkit.helpers.constants import *
-from schrodinger2d import SingleElectron
+
+from .schrodinger2d import Schrodinger2DSolver
 
 # from shapely.plotting import plot_polygon
 # from itertools import product
@@ -19,23 +17,20 @@ from schrodinger2d import SingleElectron
 # import matplotlib
 # from numpy import ma
 
-from utils import find_min_or_max_location, inside_trap
-
-frequency_scale = 1e6 * np.sqrt(2 * qe/me) * 1e-9/(2 * np.pi)
-l0 = 1e-6
+from .utils import find_min_or_max_location, inside_trap
 
 ###########################################
 #### MAIN Class for Qubit Analysis ########
 ###########################################
 
 @dataclass
-class QuantumDot:
+class TrapPotential:
     x: np.ndarray
     y: np.ndarray
     potential: np.ndarray
 
     def __post_init__(self):
-        self.trap = {'exist': None, 'ij': None, 'xy': None, 'value': None, 'type': None}
+        self.well = {'exist': None, 'ij': None, 'xy': None, 'value': None, 'type': None}
         self.barrier = {'exist': None, 'ij': None, 'xy': None, 'value': None, 'type': None}
 
     def find_trap(self, search_area: Polygon=None, tol: float=0.05):
@@ -54,13 +49,13 @@ class QuantumDot:
 
         match inside_trap(reduced_dot_area, *xy):
             case True:
-                self.trap['exist'] = True
-                self.trap['ij'] = ij
-                self.trap['xy'] = xy
-                self.trap['value'] = value
-                self.trap['type'] = "max"
+                self.well['exist'] = True
+                self.well['ij'] = ij
+                self.well['xy'] = xy
+                self.well['value'] = value
+                self.well['type'] = "max"
             case False:
-                self.trap['exist'] = False
+                self.well['exist'] = False
     
 
     def find_contour(self, value: float) -> list:
@@ -145,12 +140,12 @@ class Resonator:
 
 
 @dataclass
-class QubitProperties:
+class ChargeQubit:
     resonator: Resonator
-    qdot: QuantumDot
+    trap: TrapPotential
 
     def __post_init__(self):
-        self.schrodinger = SingleElectron(self.qdot.x, self.qdot.y, self.qdot.potential, x_unit=1e-6)
+        self.schrodinger = Schrodinger2DSolver(self.trap.x, self.trap.y, self.trap.potential, x_unit=1e-6)
 
     def get_spectrum(
         self,
@@ -160,11 +155,11 @@ class QubitProperties:
         axes_zoom: Optional[float] = None,
         **solve_kwargs):
 
-        if not self.qdot.trap['exist']:
+        if not self.trap.well['exist']:
             raise ValueError("No quantum dot found, cannot calculate spectrum.")
         
         if coor is None:
-            coor = self.qdot.trap['xy']
+            coor = self.trap.well['xy']
 
         self.schrodinger.solve_system(coor=coor, dxdy=dxdy, **solve_kwargs)
         if plot_wavefunctions:
@@ -179,8 +174,8 @@ class QubitProperties:
             Optional[tuple[float, float]]: The x and y components of the RF electric field at the electron's position,
             or None if the electron position is not defined.
         """
-        if self.qdot.trap['exist']:
-            xy = self.qdot.trap["xy"]
+        if self.trap.well['exist']:
+            xy = self.trap.well["xy"]
             ExEy = self.resonator.get_field(*xy)
             return float(ExEy[0]), float(ExEy[1])
         return None

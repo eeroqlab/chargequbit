@@ -9,7 +9,7 @@ setup(
         'numpy>=2.4.2',
         'scipy>=1.17.0',
         'Shapely>=2.1.2',
-        'skimage>=0.0',
+        'scikit-image>=0.0',
         'tabulate>=0.9.0',
         'zeroheliumkit>=0.5.5'
     ]

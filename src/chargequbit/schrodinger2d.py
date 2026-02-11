@@ -47,7 +47,7 @@ def find_min_or_max_location(
 @dataclass
 class ScalingFactors:
     """
-    Sets the scales of the Schrodinger equation: k * \Delta \psi + u * V(x) * \psi = E * psi
+    Sets the scales of the Schrodinger equation: k * Delta psi + u * V(x) * psi = E * psi
         k = -hbar**2 / 2 m
         u = -e
         E = 1

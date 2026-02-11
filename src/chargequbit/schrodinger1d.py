@@ -135,7 +135,7 @@ def solve_eigenproblem(H):
 @dataclass
 class ScalingFactors:
     """
-    Sets the scales of the Schrodinger equation: k * \Delta \psi + u * V(x) * \psi = E * psi
+    Sets the scales of the Schrodinger equation: k * Delta psi + u * V(x) * psi = E * psi
         k = -hbar**2 / 2 m
         u = -e
         E = 1
@@ -166,7 +166,7 @@ class Schrodinger1DSolver():
     
     def set_scales(self):
         """
-        Sets the scales of the Schrodinger equation: k * \Delta \psi + u * V(x) * psi = E * psi
+        Sets the scales of the Schrodinger equation: k * Delta psi + u * V(x) * psi = E * psi
             k = -hbar**2 / 2 m
             u = e
             E = 1

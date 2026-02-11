@@ -16,5 +16,5 @@ authors = [
 [project.urls]
 Homepage = "https://github.com/eeroqlab/chargequbit"
 
-[tool.setuptools]
-packages = { find = { include = ['src'] } }
+[tool.setuptools.packages.find]
+where = ["src"]

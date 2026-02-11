@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from scipy.interpolate import RegularGridInterpolator
 from skimage import measure
 
-from zeroheliumkit.fem.fieldreader import FieldAnalyzer, CouplingConstants
+from zeroheliumkit.fem import FieldAnalyzer, CouplingConstants
 from zeroheliumkit.src.settings import *
 from zeroheliumkit.helpers.constants import *
 

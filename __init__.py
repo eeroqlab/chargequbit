@@ -4,7 +4,7 @@
 #
 # --------------------------------------------------------------------------------------
 
-from .src import *
+from .src.chargequbit import *
 
 __all__ = [
     'ChargeQubit',

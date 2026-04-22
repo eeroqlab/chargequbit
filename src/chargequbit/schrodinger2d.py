@@ -164,6 +164,8 @@ class WavefunctionClassifier:
         Returns:
             dict: A dictionary containing the basic properties.
         """
+        fx = fy = f2x = f2y = None
+
         classification = self.classify_wavefunction_by_xy()
         for i, cl in enumerate(classification):
             match (cl['nx'], cl['ny']):
@@ -175,7 +177,10 @@ class WavefunctionClassifier:
                     f2x = self.freqs[i]
                 case (0,2):
                     f2y = self.freqs[i]
-        return {"fx": fx, "fy": fy, "anharm_x": f2x - 2*fx, "anharm_y": f2y - 2*fy}
+        
+        anharm_x = f2x - 2*fx if f2x is not None and fx is not None else None
+        anharm_y = f2y - 2*fy if f2y is not None and fy is not None else None
+        return {"fx": fx, "fy": fy, "anharm_x": anharm_x, "anharm_y": anharm_y}
 
 
     def plot_one(

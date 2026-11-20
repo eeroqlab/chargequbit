@@ -140,7 +140,7 @@ def find_min_or_max_location(
     """
 
     if inside_area is not None:
-        inside_mask = generate_mask(x, y, inside_area, context="inside")
+        inside_mask = generate_mask(x, y, inside_area, context="outside")
         potential = ma.masked_array(potential, mask=inside_mask)
 
     if context == "max":

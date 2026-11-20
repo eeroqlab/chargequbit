@@ -1,4 +1,6 @@
 import numpy as np
+from math import isnan
+from tabulate import tabulate
 
 from typing import List, Optional
 from dataclasses import dataclass
@@ -228,7 +230,7 @@ class ChargeQubit:
         properties_y = {
             "fe (GHz)": round(self.schrodinger.classifier.properties["fy"] * 1e-9, 6),
             "Vzpf (uV)": round(Vzpf * 1e6, 1),
-            "le (nm)": round(lx * 1e9, 1),
+            "le (nm)": round(ly * 1e9, 1),
             "lr (nm)": round(le * 1e9, 1),
             "anharmonicity (MHz)": round(self.schrodinger.classifier.properties["anharm_y"] * 1e-6, 1),
             "electric_field (1/um)": round(ExEy[1], 2),
@@ -237,9 +239,18 @@ class ChargeQubit:
             "capacitance_change (aF)": round(capacitance_change_y * 1e18, 2),
         }
 
-        return {"x": properties_x, "y": properties_y}
+        return {"x": {k: float(v) for k,v in properties_x.items()}, "y": {k: float(v) for k,v in properties_y.items()}}
 
-
+    def show_properties(self, floatfmt="g"):
+        d = self.get_properties()
+        cols = list(dict.fromkeys(k for row in d.values() for k in row))   # all keys, in order
+        rows = []
+        for name, row in d.items():
+            vals = [row.get(c) for c in cols]
+            vals = [None if v is None or isnan(v) else v + 0.0 for v in vals]
+            rows.append([name, *vals])
+        headers = ["", *(c.replace(" (", "\n(") for c in cols)]
+        print(tabulate(rows, headers=headers, tablefmt="simple", floatfmt=floatfmt, missingval=""))
     
     # def estimate_frequency_shift_with_relaxation(self, relaxation_rate: float | list | np.ndarray, omega_e: float=None) -> float:
     #     """ Estimates the frequency shift of the resonator for electron motion with damping or relaxation.

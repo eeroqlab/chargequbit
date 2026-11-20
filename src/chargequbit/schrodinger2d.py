@@ -164,7 +164,7 @@ class WavefunctionClassifier:
         Returns:
             dict: A dictionary containing the basic properties.
         """
-        fx = fy = f2x = f2y = None
+        fx = fy = f2x = f2y = np.nan
 
         classification = self.classify_wavefunction_by_xy()
         for i, cl in enumerate(classification):
@@ -178,8 +178,8 @@ class WavefunctionClassifier:
                 case (0,2):
                     f2y = self.freqs[i]
         
-        anharm_x = f2x - 2*fx if f2x is not None and fx is not None else None
-        anharm_y = f2y - 2*fy if f2y is not None and fy is not None else None
+        anharm_x = f2x - 2*fx if f2x is not np.nan and fx is not np.nan else np.nan
+        anharm_y = f2y - 2*fy if f2y is not np.nan and fy is not np.nan else np.nan
         return {"fx": fx, "fy": fy, "anharm_x": anharm_x, "anharm_y": anharm_y}
 
 
